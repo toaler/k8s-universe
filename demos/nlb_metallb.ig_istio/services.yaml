@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: service-a-cm
+  namespace: default
+data:
+  index.html: |
+    <html>
+      <body style="background-color:#33475b">
+        <h1>Service A is online!</h1>
+        </br>
+        <h1>Service A is serving the traffic </h1>
+      </body>
+    </html
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: service-b-cm
+  namespace: default
+data:
+  index.html: |
+    <html>
+      <body style="background-color:#DBF9FC">
+        <h1>Service B is online!</h1>
+        </br>
+        <h1>Service B is serving the traffic </h1>
+      </body>
+    </html>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-a
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: service-a
+---
+
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: service-a
+  name: service-a
+spec:
+  volumes:
+  - name: service-a-cm
+    configMap:
+      name: service-a-cm
+  containers:
+  - image: nginx
+    name: service-a
+    volumeMounts:
+    - name: service-a-cm
+      mountPath: /usr/share/nginx/html/
+    ports:
+    - containerPort: 80
+    resources:
+      limits:
+        cpu: 100m
+        memory: 200M
+      requests:
+        cpu: 10m
+        memory: 50M
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-b
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: service-b
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: service-b
+  name: service-b
+spec:
+  volumes:
+  - name: service-b-cm
+    configMap:
+      name: service-b-cm
+  containers:
+  - image: nginx
+    name: service-b
+    volumeMounts:
+    - name: service-b-cm
+      mountPath: /usr/share/nginx/html/
+    ports:
+    - containerPort: 80
+    resources:
+      limits:
+        cpu: 100m
+        memory: 200M
+      requests:
+        cpu: 10m
+        memory: 50M
+---

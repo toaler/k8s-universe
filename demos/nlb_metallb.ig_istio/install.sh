@@ -1,3 +1,5 @@
+# Based on https://www.youtube.com/watch?v=6tEy9Rp__kw&t=635s
+
 kind create cluster --config kind.yaml
 
 brew install helm
@@ -31,11 +33,11 @@ kubectl wait pods --for=condition=Ready -l app=istiod -n istio-system --timeout=
 echo -e "Deploying test applications"
 kubectl apply -f ./services.yaml -n default
 
-curl http://127.0.0.1/appA
-curl http://127.0.0.1/appB
-
 echo -e "Creating gateway resource and VirtualService for test applications"
 kubectl apply -f ./gateway.yaml -n default
+
+curl http://127.0.0.1/appA
+curl http://127.0.0.1/appB
 
 echo -e "Setup kiali"
 

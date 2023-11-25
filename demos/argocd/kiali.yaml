@@ -1,0 +1,5 @@
+  auth:
+    strategy: anonymous
+  external_services:
+    prometheus:
+      url: http://prometheus-server.monitoring

@@ -76,6 +76,8 @@ log "Demo services installed"
 log "Teset demo services"
 curl $IP:30000/appA
 curl $IP:30000/appB
+kubectl wait pods --for=condition=Ready -l app=service-a -n default
+kubectl wait pods --for=condition=Ready -l app=service-b -n default
 
 # Install Prometheus
 

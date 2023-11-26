@@ -20,7 +20,7 @@ brew install argocd
 log "Install Argo"
 kubectl create namespace argocd
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.9.2/manifests/install.yaml
-kubectl wait --for=condition=Ready --timeout=2m --all pods -n argocd
+kubectl wait --for=condition=Ready --timeout=5m --all deployments,pods,services -n argocd
 kubectl patch service argocd-server -p '{"spec": {"type": "NodePort"}}' -n argocd
 
 IP=$(kubectl get node argo-worker -o=jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
@@ -43,7 +43,6 @@ argocd repo add https://kiali.org/helm-charts --type helm --name kiali --upsert
 
 # Install Istio
 log "Add Istio application to Argo"
-kubectl create namespace istio-system
 argocd app create istio-base --repo https://istio-release.storage.googleapis.com/charts --helm-chart base --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc
 argocd app sync istio-base
 

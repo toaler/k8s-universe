@@ -6,6 +6,9 @@ log() {
     echo "$log_message"
 }
 
+log "Deleting existing kind cluster"
+kind delete cluster --name argo
+
 log "Creating kind cluster"
 kind create cluster --config kind.yaml --name argo
 
@@ -20,12 +23,16 @@ brew install argocd
 log "Install Argo"
 kubectl create namespace argocd
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.9.2/manifests/install.yaml
-kubectl wait --for=condition=Ready --timeout=5m --all deployments,pods,services -n argocd
+kubectl wait --for=condition=Ready --timeout=5m --all pods -n argocd
 kubectl patch service argocd-server -p '{"spec": {"type": "NodePort"}}' -n argocd
 
 IP=$(kubectl get node argo-worker -o=jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
 PORT=$(kubectl get service argocd-server -o=jsonpath='{.spec.ports[?(@.nodePort)].nodePort}' -n argocd | awk '{print $1}')
 PASSWORD=$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 --decode)
+
+sleep 15
+log "Creating argocd session"
+argocd login --insecure --username admin --password $PASSWORD $IP:$PORT
 
 log "Argo UI http://$IP:$PORT username/password admin/$PASSWORD"
 
@@ -43,6 +50,7 @@ argocd repo add https://kiali.org/helm-charts --type helm --name kiali --upsert
 
 # Install Istio
 log "Add Istio application to Argo"
+kubectl create namespace istio-system
 argocd app create istio-base --repo https://istio-release.storage.googleapis.com/charts --helm-chart base --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc
 argocd app sync istio-base
 
@@ -65,6 +73,11 @@ log "Istio installed"
 # Eventually replace with a proper ArgoCD managed app
 kubectl apply -f ./services.yaml -n default
 log "Demo services installed"
+log "Teset demo services"
+curl $IP:30000/appA
+curl $IP:30000/appB
+kubectl wait pods --for=condition=Ready -l app=service-a -n default
+kubectl wait pods --for=condition=Ready -l app=service-b -n default
 
 # Install Prometheus
 
@@ -111,4 +124,4 @@ argocd app sync guestbook
 
 kubectl wait --for=condition=Ready pod -l app=guestbook-ui --timeout=5m -n default
 
-echo "guestbook deployed"
+log "guestbook deployed"

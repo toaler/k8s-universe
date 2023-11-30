@@ -10,8 +10,11 @@ set -o pipefail
 # sysctl net.bridge.bridge-nf-call-arptables=0
 # sysctl net.bridge.bridge-nf-call-ip6tables=0
 
+TIMEOUT=300s
+
 log() {
-    local timestamp=$(date +"%Y-%m-%d %T")
+    local timestamp
+    timestamp=$(date +"%Y-%m-%d %T")
     local log_message="$timestamp [INFO] : $1"
     echo "$log_message"
 }
@@ -87,7 +90,11 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 elif [[ "$(uname -s)" == "Linux" ]]; then
     # Linux specific installations (modify this according to your package manager)
     # For example, if using apt:
-    sudo snap install helm --classic
+    if [ ! -e "/snap/bin/helm" ]; then
+      sudo snap install helm --classic
+    else
+      log "helm already installed"
+    fi
 
     if [ ! -e "/usr/local/bin/argocd" ]; then
       curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
@@ -102,10 +109,11 @@ else
 fi
 
 # Bootstrap Argo
-log "Install Argo"
+ARGO_VER=2.9.2
+log "Install Argo version ${ARGO_VER}"
 kubectl create namespace argocd
 
-curl https://raw.githubusercontent.com/argoproj/argo-cd/v2.9.2/manifests/install.yaml -o argo_install.yaml
+curl "https://raw.githubusercontent.com/argoproj/argo-cd/v${ARGO_VER}/manifests/install.yaml" -o argo_install.yaml
 
 sed -i 's/imagePullPolicy: Always/imagePullPolicy: IfNotPresent/g' argo_install.yaml
 
@@ -113,12 +121,12 @@ kubectl apply -n argocd -f argo_install.yaml
 
 NAMESPACE="argocd"
 
-kubectl patch service argocd-server -p '{"spec": {"type": "NodePort"}}' -n argocd
-kubectl wait --for=condition=Ready --timeout=5m --all pods -n argocd
+kubectl patch service argocd-server -p '{"spec": {"type": "NodePort"}}' -n ${NAMESPACE}
+kubectl wait --for=condition=Ready --timeout=5m --all pods -n ${NAMESPACE}
 
 IP=$(kubectl get node argo-worker -o=jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
-PORT=$(kubectl get service argocd-server -o=jsonpath='{.spec.ports[?(@.nodePort)].nodePort}' -n argocd | awk '{print $1}')
-PASSWORD=$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 --decode)
+PORT=$(kubectl get service argocd-server -o=jsonpath='{.spec.ports[?(@.nodePort)].nodePort}' -n ${NAMESPACE}| awk '{print $1}')
+PASSWORD=$(kubectl get secret argocd-initial-admin-secret -n ${NAMESPACE} -o jsonpath='{.data.password}' | base64 --decode)
 
 sleep 120
 log "Creating argocd session"
@@ -127,9 +135,9 @@ argocd login --insecure --username admin --password $PASSWORD $IP:$PORT
 log "Argo UI http://$IP:$PORT username/password admin/$PASSWORD"
 
 log "Display argocd configuration"
-kubectl -n argocd get all
+kubectl -n ${NAMESPACE} get all
 
-kubectl config set-context --current --namespace=argocd
+kubectl config set-context --current --namespace=${NAMESPACE}
 
 # Bootstrap Helm charts
 log "Inject Helm charts URL's into Argocd"
@@ -149,7 +157,7 @@ argocd app sync istiod
 
 kubectl label ns default istio-injection=enabled --overwrite
 
-kubectl wait pods --for=condition=Ready -l app=istiod -n istio-system --timeout=120s
+kubectl wait pods --for=condition=Ready -l app=istiod -n istio-system --timeout=${TIMEOUT}
 
 argocd app create istio-gateway --repo https://istio-release.storage.googleapis.com/charts --helm-chart gateway --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc
 argocd app sync istio-gateway
@@ -163,11 +171,11 @@ log "Istio installed"
 # Eventually replace with a proper ArgoCD managed app
 kubectl apply -f ./services.yaml -n default
 log "Demo services installed"
-log "Tset demo services"
-kubectl wait pods --for=condition=Ready -l app=service-a -n default --timeout=120s
-kubectl wait pods --for=condition=Ready -l app=service-b -n default --timeout=120s
-curl $IP:30000/appA
-curl $IP:30000/appB
+log "Test demo services"
+kubectl wait pods --for=condition=Ready -l app=service-a -n default --timeout=${TIMEOUT}
+kubectl wait pods --for=condition=Ready -l app=service-b -n default --timeout=${TIMEOUT}
+curl "$IP:30000/appA"
+curl "$IP:30000/appB"
 
 # Install Prometheus
 
@@ -177,7 +185,7 @@ argocd app create prometheus --repo https://prometheus-community.github.io/helm-
 argocd app sync prometheus
 
 log "Waiting for prometheus to be ready"
-kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=prometheus -n monitoring --timeout=120s
+kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=prometheus -n monitoring --timeout=${TIMEOUT}
 
 kubectl port-forward -n monitoring service/prometheus-server 8888:80 &
 log "prometheus-server available on http://localhost:8888"
@@ -187,7 +195,7 @@ log "prometheus-server available on http://localhost:8888"
 log "Install grafana"
 argocd app create grafana --repo https://grafana.github.io/helm-charts --helm-chart grafana --revision 7.0.8 --dest-namespace monitoring --dest-server https://kubernetes.default.svc --values-literal-file grafana-value.yaml --upsert
 argocd app sync grafana
-kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=grafana -n monitoring --timeout=120s
+kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=grafana -n monitoring --timeout=${TIMEOUT}
 
 kubectl port-forward -n monitoring service/grafana 8889:80 &
 log "grafana available on http://localhost:8889"
@@ -198,7 +206,7 @@ log "Install Kiali"
 argocd app create kiali-server --repo https://kiali.org/helm-charts --helm-chart kiali-server --revision 1.77.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc --values-literal-file kiali.yaml --upsert
 argocd app sync kiali-server 
 
-kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=kiali -n istio-system --timeout=120s
+kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=kiali -n istio-system --timeout=${TIMEOUT}
 # TODO how to get this to be picked up as part of argocd app create
 kubectl apply -f ./kiali-vs.yaml -n istio-system
 

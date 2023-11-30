@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# References
+# Istio Gateway Setup --> https://www.youtube.com/watch?v=6tEy9Rp__kw
 set -x
 set -o errexit
 set -o nounset
@@ -68,6 +70,7 @@ image_names=(
     "ghcr.io/dexidp/dex:v2.37.0"
     "docker.io/library/redis:7.0.11-alpine"
     "docker.io/library/nginx:latest"
+    "quay.io/prometheus/prometheus:v2.48.0"
     # Add more image names here if needed
 )
 
@@ -102,7 +105,7 @@ elif [[ "$(uname -s)" == "Linux" ]]; then
       rm argocd-linux-amd64
     else
       log "argocd already installed"
-    fi 
+    fi
 else
     log "Unsupported operating system"
     exit 1
@@ -181,14 +184,12 @@ curl "$IP:30000/appB"
 
 log "Install prometheus"
 kubectl create namespace monitoring
+kubectl label ns monitoring istio-injection=enabled --overwrite
 argocd app create prometheus --repo https://prometheus-community.github.io/helm-charts --helm-chart prometheus --revision 25.8.0 --dest-namespace monitoring --dest-server https://kubernetes.default.svc
 argocd app sync prometheus
 
 log "Waiting for prometheus to be ready"
 kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=prometheus -n monitoring --timeout=${TIMEOUT}
-
-kubectl port-forward -n monitoring service/prometheus-server 8888:80 &
-log "prometheus-server available on http://localhost:8888"
 
 # Install grafana
 
@@ -197,29 +198,26 @@ argocd app create grafana --repo https://grafana.github.io/helm-charts --helm-ch
 argocd app sync grafana
 kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=grafana -n monitoring --timeout=${TIMEOUT}
 
-kubectl port-forward -n monitoring service/grafana 8889:80 &
-log "grafana available on http://localhost:8889"
-
 # Install Kiali
 
 log "Install Kiali"
 argocd app create kiali-server --repo https://kiali.org/helm-charts --helm-chart kiali-server --revision 1.77.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc --values-literal-file kiali.yaml --upsert
-argocd app sync kiali-server 
+argocd app sync kiali-server
 
 kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=kiali -n istio-system --timeout=${TIMEOUT}
 # TODO how to get this to be picked up as part of argocd app create
 kubectl apply -f ./kiali-vs.yaml -n istio-system
+log "kiali URL = $IP:30000/kiali"
 
-kubectl port-forward svc/kiali 8890:20001 -n istio-system &
-log "kiali available on http://localhost:8890"
-
-# Install Test App
-argocd app create guestbook --repo https://github.com/argoproj/argocd-example-apps.git --path guestbook --dest-server https://kubernetes.default.svc --dest-namespace default
-
-argocd app get guestbook
-
-argocd app sync guestbook
-
-kubectl wait --for=condition=Ready pod -l app=guestbook-ui --timeout=5m -n default
-
-log "guestbook deployed"
+log "L I N K S"
+log "Argo UI";
+log "http://$IP:$PORT username/password admin/$PASSWORD"
+kubectl port-forward svc/kiali 8887:20001 -n istio-system > /dev/null 2>&1 &
+log "Kiali UI"
+log "http://localhost:8887"
+kubectl port-forward -n monitoring service/prometheus-server 8888:80 > /dev/null 2>&1 &
+log "Prometheus UI"
+log "http://localhost:8888"
+kubectl port-forward -n monitoring service/grafana 8889:80 > /dev/null 2>&1 &
+log "Grafana"
+log "http://localhost:8889 username/password admin/admin"

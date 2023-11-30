@@ -55,6 +55,7 @@ spec:
   containers:
   - image: nginx
     name: service-a
+    imagePullPolicy: IfNotPresent
     volumeMounts:
     - name: service-a-cm
       mountPath: /usr/share/nginx/html/
@@ -94,6 +95,7 @@ spec:
   containers:
   - image: nginx
     name: service-b
+    imagePullPolicy: IfNotPresent
     volumeMounts:
     - name: service-b-cm
       mountPath: /usr/share/nginx/html/

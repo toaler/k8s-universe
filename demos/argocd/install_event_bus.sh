@@ -63,6 +63,18 @@ spec:
         "cleanup.policy": "delete"
 EOF
 
+pod_name=$(kubectl get pods -n kafka | grep kafka-0 | awk '{print $1}')
+
+
+# Check if the pod name is not empty before port forwarding
+if [ -n "$pod_name" ]; then
+    kubectl port-forward -n kafka "$pod_name" 29092:29092 > /dev/null 2>&1 &
+else
+    echo "Pod not found."
+    exit 1
+fi
+
+
 # Can test by opening up two shells and run the following:
 #
 # shell 1 > kubectl -n kafka run kafka-producer -it --image=ghcr.io/banzaicloud/kafka:2.13-3.1.0 --rm=true --restart=Never -- /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka-headless:29092 --topic my-topic

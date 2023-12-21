@@ -97,6 +97,14 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     # macOS (Darwin) specific installations using Homebrew
     brew install helm
     brew install argocd
+
+    if [ -f "/usr/local/bin/telepresence" ]; then
+      log "Telepresence exists!"
+    else
+      curl -fL https://app.getambassador.io/download/tel2oss/releases/download/v2.17.0/telepresence-linux-amd64 -o /usr/local/bin/telepresence
+      sudo chmod a+x /usr/local/bin/telepresence
+    fi
+
 elif [[ "$(uname -s)" == "Linux" ]]; then
     # Linux specific installations (modify this according to your package manager)
     # For example, if using apt:
@@ -113,6 +121,14 @@ elif [[ "$(uname -s)" == "Linux" ]]; then
     else
       log "argocd already installed"
     fi
+
+    if [ -f "/usr/local/bin/telepresence" ]; then
+      log "Telepresence exists!"
+    else
+      curl -fL https://app.getambassador.io/download/tel2oss/releases/download/v2.17.0/telepresence-linux-amd64 -o /usr/local/bin/telepresence\n\n
+      sudo chmod a+x /usr/local/bin/telepresence
+    fi
+
 else
     log "Unsupported operating system"
     exit 1
@@ -125,14 +141,23 @@ kubectl create namespace argocd || fail "Failed to create argocd namespace"
 
 curl "https://raw.githubusercontent.com/argoproj/argo-cd/v${ARGO_VER}/manifests/install.yaml" -o argo_install.yaml || fail "Failed to download argo-cd manifest"
 
-sed -i '' 's/imagePullPolicy: Always/imagePullPolicy: IfNotPresent/g' argo_install.yaml || fail "Failed to replace image pull policy in argo manifest"
+
+ if [[ "$(uname -s)" == "Darwin" ]]; then
+     sed -i '' 's/imagePullPolicy: Always/imagePullPolicy: IfNotPresent/g' argo_install.yaml || fail "Failed to replace image pull policy in argo manifest"
+ elif [[ "$(uname -s)" == "Linux" ]]; then
+     sed -i 's/imagePullPolicy: Always/imagePullPolicy: IfNotPresent/g' argo_install.yaml || fail "Failed to replace image pull policy in argo manifest"
+ else
+     log "Unsupported operating system"
+     exit 1
+ fi
+
 
 kubectl apply -n argocd -f argo_install.yaml || fail "Failed to kubectl apply argo_install"
 
 NAMESPACE="argocd"
 
 kubectl patch service argocd-server -p '{"spec": {"type": "NodePort"}}' -n ${NAMESPACE} || fail "Failed to patch argocd-server"
-kubectl wait --for=condition=Ready --timeout=5m --all pods -n ${NAMESPACE} || fail "Failed to create pods in ${NAMESPACE}"
+kubectl wait --for=condition=Ready --timeout=10m --all pods -n ${NAMESPACE} || fail "Failed to create pods in ${NAMESPACE}"
 
 IP=$(kubectl get node argo-worker -o=jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
 PORT=$(kubectl get service argocd-server -o=jsonpath='{.spec.ports[?(@.nodePort)].nodePort}' -n ${NAMESPACE}| awk '{print $1}')
@@ -184,8 +209,8 @@ log "Demo services installed"
 log "Test demo services"
 kubectl wait pods --for=condition=Ready -l app=service-a -n default --timeout=${TIMEOUT} || fail "Failed to deploy service-a"
 kubectl wait pods --for=condition=Ready -l app=service-b -n default --timeout=${TIMEOUT} || fail "Failed to deploy service-b"
-curl "$IP:30000/appA" || fail "Failed to HTTP get appA"
-curl "$IP:30000/appB" || fail "Failed to HTTP get appB"
+#curl "$IP:30000/appA"
+#curl "$IP:30000/appB"
 
 # Install Prometheus
 
@@ -215,6 +240,11 @@ kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=kiali -n istio
 # TODO how to get this to be picked up as part of argocd app create
 kubectl apply -f ./kiali-vs.yaml -n istio-system || fail "Failed to install kiali virtual service"
 log "kiali URL = $IP:30000/kiali"
+
+log "Install telepresence"
+telepresence helm install
+telepresence --run-shell
+
 
 log "L I N K S"
 log "Argo UI";

@@ -125,7 +125,7 @@ elif [[ "$(uname -s)" == "Linux" ]]; then
     if [ -f "/usr/local/bin/telepresence" ]; then
       log "Telepresence exists!"
     else
-      curl -fL https://app.getambassador.io/download/tel2oss/releases/download/v2.17.0/telepresence-linux-amd64 -o /usr/local/bin/telepresence\n\n
+      curl -fL https://app.getambassador.io/download/tel2oss/releases/download/v2.17.0/telepresence-darwin-amd64 -o /usr/local/bin/telepresence
       sudo chmod a+x /usr/local/bin/telepresence
     fi
 
@@ -243,7 +243,7 @@ log "kiali URL = $IP:30000/kiali"
 
 log "Install telepresence"
 telepresence helm install
-telepresence --run-shell
+telepresence --run-shell &
 
 
 log "L I N K S"

@@ -10,7 +10,7 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-TIMEOUT=300s
+TIMEOUT=300
 
 source ./functions.sh
 
@@ -32,20 +32,19 @@ EOF
 
 kubectl get pods -n zookeeper
 
-kubectl wait --for=condition=Ready pod/zookeeper-0 -n zookeeper --timeout=300s
+retry_with_backoff kubectl wait --for=condition=Ready pod/zookeeper-0 -n zookeeper --timeout=${TIMEOUT}s
 
 kubectl create --validate=false -f https://github.com/banzaicloud/koperator/releases/download/v0.24.1/kafka-operator.crds.yaml
 
 helm install kafka-operator --repo https://kubernetes-charts.banzaicloud.com kafka-operator --namespace=kafka --create-namespace
 
-kubectl wait --for=condition=Ready pod -n kafka -l app.kubernetes.io/name=kafka-operator --timeout=300s
+retry_with_backoff kubectl wait --for=condition=Ready pod -n kafka -l app.kubernetes.io/name=kafka-operator --timeout=${TIMEOUT}s
 
 curl https://raw.githubusercontent.com/banzaicloud/koperator/master/config/samples/simplekafkacluster.yaml -o simplekafkacluster.yaml
 sed -i.bak 's/zookeeper-server-client.zookeeper/zookeeper-client.zookeeper.svc.cluster.local/g' simplekafkacluster.yaml
 kubectl create -n kafka -f simplekafkacluster.yaml
 
-kubectl wait --for=condition=Ready pods -n kafka -l app=kafka --timeout=300s
-kubectl wait --for=condition=Ready pods -n kafka -l app=cruisecontrol --timeout=300s
+retry_with_backoff kubectl wait --for=condition=ready pod --namespace kafka -l app=kafka --timeout=${TIMEOUT}s
 
 kubectl create -n kafka -f - <<EOF
 apiVersion: kafka.banzaicloud.io/v1alpha1

@@ -57,9 +57,7 @@ else
     exit 1
 fi
 
-sleep 3
-
-kubectl apply -n kafka -f ./my-topic.yaml
+retry_with_backoff kubectl apply -n kafka -f ./my-topic.yaml
 
 # Can test by opening up two shells and run the following:
 #

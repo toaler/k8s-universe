@@ -46,33 +46,20 @@ kubectl create -n kafka -f simplekafkacluster.yaml
 
 retry_with_backoff kubectl wait --for=condition=ready pod --namespace kafka -l app=kafka --timeout=${TIMEOUT}s
 
-kubectl create -n kafka -f - <<EOF
-apiVersion: kafka.banzaicloud.io/v1alpha1
-kind: KafkaTopic
-metadata:
-    name: my-topic
-spec:
-    clusterRef:
-        name: kafka
-    name: my-topic
-    partitions: 1
-    replicationFactor: 1
-    config:
-        "retention.ms": "604800000"
-        "cleanup.policy": "delete"
-EOF
-
 pod_name=$(kubectl get pods -n kafka | grep kafka-0 | awk '{print $1}')
 
 
 # Check if the pod name is not empty before port forwarding
 if [ -n "$pod_name" ]; then
-    kubectl port-forward -n kafka "$pod_name" 29092:29092 > /dev/null 2>&1 &
+    kubectl port-forward -n kafka "${pod_name}" 29092:29092 > /dev/null 2>&1 &
 else
     echo "Pod not found."
     exit 1
 fi
 
+sleep 3
+
+kubectl apply -n kafka -f ./my-topic.yaml
 
 # Can test by opening up two shells and run the following:
 #

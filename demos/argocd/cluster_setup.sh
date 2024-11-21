@@ -228,15 +228,15 @@ PASSWORD=$(kubectl get secret argocd-initial-admin-secret -n ${NAMESPACE} -o jso
 
 sleep 120
 
-kubectl port-forward svc/argocd-server 8080:80 -n argocd &
-log "Created port-forwarding for svc/argocd-server 8080:80"
+#kubectl port-forward svc/argocd-server 8886:80 -n argocd &
+#log "Created port-forwarding for svc/argocd-server 8886:80"
 
 sleep 5
 
 log "Creating argocd session"
 argocd login --insecure --username admin --password $PASSWORD localhost:8080 || fail "Failed to login to argocd"
 
-log "Argo UI http://$IP:$PORT username/password admin/$PASSWORD"
+log "Argo UI http://localhost:8886 username/password admin/$PASSWORD"
 
 log "Display argocd resources"
 kubectl -n ${NAMESPACE} get all || fail "Failed to get argo k8s resources"
@@ -309,6 +309,10 @@ wait_for_pods_ready "app.kubernetes.io/name=kiali" "istio-system"
 kubectl apply -f ./kiali-vs.yaml -n istio-system || fail "Failed to install kiali virtual service"
 log "kiali URL = $IP:30000/kiali"
 
+# Install httpbin (TODO move to argocd)
+kubectl apply -f httpbin.yaml
+kubectl port-forward svc/httpbin 8890:80 &
+
 log "Install telepresence"
 telepresence helm install
 telepresence --run-shell &
@@ -316,7 +320,7 @@ telepresence --run-shell &
 
 log "L I N K S"
 log "Argo UI";
-log "http://$IP:$PORT username/password admin/$PASSWORD"
+log "http://locahost:8886 username/password admin/$PASSWORD"
 kubectl port-forward svc/kiali 8887:20001 -n istio-system > /dev/null 2>&1 &
 log "Kiali UI"
 log "http://localhost:8887"
@@ -326,3 +330,5 @@ log "http://localhost:8888"
 kubectl port-forward -n monitoring service/grafana 8889:80 > /dev/null 2>&1 &
 log "Grafana"
 log "http://localhost:8889 username/password admin/admin"
+log "httpbin"
+log "http://httpbin:8890"

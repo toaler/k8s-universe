@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # References
 # Istio Gateway Setup --> https://www.youtube.com/watch?v=6tEy9Rp__kw
 set -x
@@ -45,6 +43,50 @@ fail() {
   exit 1
 }
 
+wait_for_pods_ready() {
+  local LABEL=$1
+  local NAMESPACE=$2
+  local TIMEOUT=600
+  local MAX_RETRIES=90
+  local RETRY_INTERVAL=10
+
+  # Loop to retry the kubectl get pods and kubectl wait commands
+  for i in $(seq 1 $MAX_RETRIES); do
+    echo "Checking for pods with label '$LABEL' in namespace '$NAMESPACE' (Attempt: $i/$MAX_RETRIES)"
+    
+    # Check if any pods are available with the specified label
+    PODS=$(kubectl get pods -l $LABEL -n $NAMESPACE --no-headers)
+
+    if [ -n "$PODS" ]; then
+      # Pods found, proceed to wait for them to be ready
+      echo "Pods found, waiting for them to be ready..."
+      
+      # Run kubectl wait for readiness with the specified timeout
+      kubectl wait pods -l $LABEL --for=condition=Ready -n $NAMESPACE --timeout=${TIMEOUT}s
+      WAIT_STATUS=$?
+
+      # If kubectl wait times out (exit status 1), retry the whole process
+      if [ $WAIT_STATUS -eq 1 ]; then
+        echo "kubectl wait timed out. Retrying... ($i/$MAX_RETRIES)"
+        sleep $RETRY_INTERVAL  # Wait before checking again
+        continue  # Skip the return 0 and retry the entire loop
+      fi
+
+      # If the wait was successful (pods are ready), break out of the loop
+      echo "Pods are ready!"
+      return 0  # Exit successfully when pods are ready
+    else
+      # No pods found, retry after sleep
+      echo "No pods found yet, retrying in $RETRY_INTERVAL seconds..."
+      sleep $RETRY_INTERVAL  # Wait before checking again
+    fi
+  done
+
+  # If we exit the loop without finding the pods, return failure
+  echo "Pods were not found within the retry limit of $MAX_RETRIES."
+  return 1  # Failure
+}
+
 cluster_name="argo"
 log "Deleting existing kind cluster"
 if kind get clusters | grep -q "^$cluster_name$"; then
@@ -57,7 +99,28 @@ fi
 log "Configure docker"
 
 # TODO --> Make sure to fail the script if this command fails
-docker network rm kind || fail "Couldn't successfully delete docker network"
+# Check if the network exists before trying to delete
+if docker network ls --quiet --filter name=kind | grep -q .; then
+
+  # Step 1: Get a list of all running container IDs
+  CONTAINER_IDS=$(docker ps -q)
+
+  # Step 2: Check if there are any running containers
+  if [ -z "$CONTAINER_IDS" ]; then
+    echo "No running containers found."
+  else
+    echo "Stopping all running containers..."
+    # Stop all running containers
+    docker stop $CONTAINER_IDS
+    # Step 3: Wait for containers to stop (optional)
+    echo "Waiting for containers to stop..."
+    docker wait $CONTAINER_IDS
+  fi
+
+  docker network rm kind || fail "Couldn't successfully delete docker network"
+else
+  echo "Docker network 'kind' does not exist, no need to delete."
+fi
 
 docker network create kind --subnet 100.121.20.32/27 --gateway 100.121.20.33 --ipv6=false \
 --opt "com.docker.network.driver.mtu=1500" \
@@ -98,11 +161,11 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     brew install helm
     brew install argocd
 
-    if [ -f "/usr/local/bin/telepresence" ]; then
-      log "Telepresence exists!"
+    if command -v telepresence >/dev/null 2>&1; then
+      log "Telepresence exists in the PATH!"
     else
-      curl -fL https://app.getambassador.io/download/tel2oss/releases/download/v2.17.0/telepresence-linux-amd64 -o /usr/local/bin/telepresence
-      sudo chmod a+x /usr/local/bin/telepresence
+      log "Telepresence not found. Installing..."
+      brew install telepresenceio/telepresence/telepresence-oss
     fi
 
 elif [[ "$(uname -s)" == "Linux" ]]; then
@@ -164,10 +227,16 @@ PORT=$(kubectl get service argocd-server -o=jsonpath='{.spec.ports[?(@.nodePort)
 PASSWORD=$(kubectl get secret argocd-initial-admin-secret -n ${NAMESPACE} -o jsonpath='{.data.password}' | base64 --decode)
 
 sleep 120
-log "Creating argocd session"
-argocd login --insecure --username admin --password $PASSWORD $IP:$PORT || fail "Failed to login to argocd"
 
-log "Argo UI http://$IP:$PORT username/password admin/$PASSWORD"
+#kubectl port-forward svc/argocd-server 8886:80 -n argocd &
+#log "Created port-forwarding for svc/argocd-server 8886:80"
+
+sleep 5
+
+log "Creating argocd session"
+argocd login --insecure --username admin --password $PASSWORD localhost:8080 || fail "Failed to login to argocd"
+
+log "Argo UI http://localhost:8886 username/password admin/$PASSWORD"
 
 log "Display argocd resources"
 kubectl -n ${NAMESPACE} get all || fail "Failed to get argo k8s resources"
@@ -221,25 +290,28 @@ argocd app create prometheus --repo https://prometheus-community.github.io/helm-
 argocd app sync prometheus || fail "Failed to sync prometheus argo app"
 
 log "Waiting for prometheus to be ready"
-kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=prometheus -n monitoring --timeout=${TIMEOUT} || fail "Failed to deploy prometheus pods to monitoring namespace"
+wait_for_pods_ready "app.kubernetes.io/name=prometheus" "monitoring"
 
 # Install grafana
 
 log "Install grafana"
 argocd app create grafana --repo https://grafana.github.io/helm-charts --helm-chart grafana --revision 7.0.8 --dest-namespace monitoring --dest-server https://kubernetes.default.svc --values-literal-file grafana-value.yaml --upsert || fail "Failed to create grafana argo app"
 argocd app sync grafana || fail "Failed to sync grafana app"
-kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=grafana -n monitoring --timeout=${TIMEOUT} || fail "Failed to deploy grafana app to monitoring namespace"
+wait_for_pods_ready "app.kubernetes.io/name=grafana" "monitoring"
 
 # Install Kiali
 
 log "Install Kiali"
 argocd app create kiali-server --repo https://kiali.org/helm-charts --helm-chart kiali-server --revision 1.77.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc --values-literal-file kiali.yaml --upsert || fail "Failed to create Kiali argo app"
 argocd app sync kiali-server || fail "Failed to sync kiali argo app"
-
-kubectl wait pods --for=condition=Ready -l app.kubernetes.io/name=kiali -n istio-system --timeout=${TIMEOUT} || fail "Failed to deploy kiali app"
+wait_for_pods_ready "app.kubernetes.io/name=kiali" "istio-system"
 # TODO how to get this to be picked up as part of argocd app create
 kubectl apply -f ./kiali-vs.yaml -n istio-system || fail "Failed to install kiali virtual service"
 log "kiali URL = $IP:30000/kiali"
+
+# Install httpbin (TODO move to argocd)
+kubectl apply -f httpbin.yaml
+kubectl port-forward svc/httpbin 8890:80 &
 
 log "Install telepresence"
 telepresence helm install
@@ -248,7 +320,7 @@ telepresence --run-shell &
 
 log "L I N K S"
 log "Argo UI";
-log "http://$IP:$PORT username/password admin/$PASSWORD"
+log "http://locahost:8886 username/password admin/$PASSWORD"
 kubectl port-forward svc/kiali 8887:20001 -n istio-system > /dev/null 2>&1 &
 log "Kiali UI"
 log "http://localhost:8887"
@@ -258,3 +330,5 @@ log "http://localhost:8888"
 kubectl port-forward -n monitoring service/grafana 8889:80 > /dev/null 2>&1 &
 log "Grafana"
 log "http://localhost:8889 username/password admin/admin"
+log "httpbin"
+log "http://httpbin:8890"

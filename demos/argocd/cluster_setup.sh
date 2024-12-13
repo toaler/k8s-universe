@@ -43,6 +43,33 @@ fail() {
   exit 1
 }
 
+# Function to check if kind is installed
+check_kind_installed() {
+    if command -v kind &> /dev/null; then
+        log "kind is already installed."
+        return 0
+    else
+        log "kind is not installed."
+        return 1
+    fi
+}
+
+# Install kind if not installed
+install_kind() {
+    log "Installing kind..."
+    if command -v brew &> /dev/null; then
+        brew install kind
+        if [ $? -eq 0 ]; then
+            log "kind installed successfully."
+        else
+            fail "Failed to install kind. Please check your Homebrew setup."
+        fi
+    else
+        fail "Homebrew is not installed. Please install Homebrew and rerun the script."
+    fi
+}
+
+
 wait_for_pods_ready() {
   local LABEL=$1
   local NAMESPACE=$2
@@ -86,6 +113,11 @@ wait_for_pods_ready() {
   echo "Pods were not found within the retry limit of $MAX_RETRIES."
   return 1  # Failure
 }
+
+# Main script logic
+if ! check_kind_installed; then
+    install_kind
+fi
 
 cluster_name="argo"
 log "Deleting existing kind cluster"
@@ -228,13 +260,13 @@ PASSWORD=$(kubectl get secret argocd-initial-admin-secret -n ${NAMESPACE} -o jso
 
 sleep 120
 
-#kubectl port-forward svc/argocd-server 8886:80 -n argocd &
-#log "Created port-forwarding for svc/argocd-server 8886:80"
+kubectl port-forward svc/argocd-server 8886:80 -n argocd &
+log "Created port-forwarding for svc/argocd-server 8886:80"
 
 sleep 5
 
 log "Creating argocd session"
-argocd login --insecure --username admin --password $PASSWORD localhost:8080 || fail "Failed to login to argocd"
+argocd login --insecure --username admin --password $PASSWORD localhost:8886 || fail "Failed to login to argocd"
 
 log "Argo UI http://localhost:8886 username/password admin/$PASSWORD"
 
@@ -311,6 +343,7 @@ log "kiali URL = $IP:30000/kiali"
 
 # Install httpbin (TODO move to argocd)
 kubectl apply -f httpbin.yaml
+wait_for_pods_ready "app=httpbin" "argocd"
 kubectl port-forward svc/httpbin 8890:80 &
 
 log "Install telepresence"
@@ -331,4 +364,5 @@ kubectl port-forward -n monitoring service/grafana 8889:80 > /dev/null 2>&1 &
 log "Grafana"
 log "http://localhost:8889 username/password admin/admin"
 log "httpbin"
-log "http://httpbin:8890"
+
+log "http://localhost:8890"

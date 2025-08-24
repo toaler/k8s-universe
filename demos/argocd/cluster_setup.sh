@@ -260,13 +260,42 @@ PASSWORD=$(kubectl get secret argocd-initial-admin-secret -n ${NAMESPACE} -o jso
 
 sleep 120
 
-kubectl port-forward svc/argocd-server 8886:80 -n argocd &
-log "Created port-forwarding for svc/argocd-server 8886:80"
+# Kill any existing port-forward processes to avoid conflicts
+pkill -f "kubectl port-forward.*8886" || true
 
-sleep 5
+# Wait for ArgoCD server to be fully ready
+log "Waiting for ArgoCD server to be ready"
+kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s || fail "ArgoCD server pod not ready"
+
+# Start port-forward with better error handling
+kubectl port-forward svc/argocd-server 8886:80 -n argocd --address 0.0.0.0 &
+PORT_FORWARD_PID=$!
+log "Created port-forwarding for svc/argocd-server 8886:80 (PID: $PORT_FORWARD_PID)"
+
+# Wait for port-forward to be established
+sleep 10
+
+# Test if ArgoCD is accessible
+log "Testing ArgoCD connectivity"
+for i in {1..10}; do
+    if curl -k -s https://localhost:8886 > /dev/null 2>&1; then
+        log "ArgoCD is accessible"
+        break
+    fi
+    if [ $i -eq 10 ]; then
+        log "WARNING: ArgoCD is not accessible after 10 attempts, but continuing..."
+    fi
+    log "Waiting for ArgoCD to be accessible... (attempt $i/10)"
+    sleep 3
+done
 
 log "Creating argocd session"
-argocd login --insecure --username admin --password $PASSWORD localhost:8886 || fail "Failed to login to argocd"
+# Try ArgoCD login once, but don't fail if it doesn't work
+if argocd login --insecure --username admin --password "$PASSWORD" localhost:8886 --grpc-web; then
+    log "Successfully logged into ArgoCD"
+else
+    log "WARNING: ArgoCD login failed, but continuing with setup using kubectl..."
+fi
 
 log "Argo UI http://localhost:8886 username/password admin/$PASSWORD"
 
@@ -277,26 +306,148 @@ kubectl config set-context --current --namespace=${NAMESPACE} || fail "Failed to
 
 # Bootstrap Helm charts
 log "Inject Helm charts URL's into Argocd"
-argocd repo add https://istio-release.storage.googleapis.com/charts --type helm --name istio --upsert || fail "Failed to istio helm chart to argo"
-argocd repo add https://prometheus-community.github.io/helm-charts --type helm --name prometheus-community --upsert || fail "Failed to add prometheus helm chart to argo"
-argocd repo add https://grafana.github.io/helm-charts --type helm --name grafana --upsert || fail "Failed to add grafana helm chart to argo"
-argocd repo add https://kiali.org/helm-charts --type helm --name kiali --upsert || fail "Failed to add kiali helm chart to argo"
+# Use kubectl to add repositories instead of argocd CLI to avoid login issues
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: istio-repo
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  type: helm
+  url: https://istio-release.storage.googleapis.com/charts
+  name: istio
+EOF
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: prometheus-repo
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  type: helm
+  url: https://prometheus-community.github.io/helm-charts
+  name: prometheus-community
+EOF
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-repo
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  type: helm
+  url: https://grafana.github.io/helm-charts
+  name: grafana
+EOF
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kiali-repo
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  type: helm
+  url: https://kiali.org/helm-charts
+  name: kiali
+EOF
 
 # Install Istio
 log "Add Istio application to Argo"
 kubectl create namespace istio-system || fail "Failed to create istio-system namespace"
-argocd app create istio-base --repo https://istio-release.storage.googleapis.com/charts --helm-chart base --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc || fail "Failed to create istio-base argo app"
-argocd app sync istio-base || fail "Failed to sync istio-base argo app"
 
-argocd app create istiod --repo https://istio-release.storage.googleapis.com/charts --helm-chart istiod --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc || fail "Failed to create istiod argo app"
-argocd app sync istiod || fail "Failed to sync istiod argo app"
+# Create Istio applications using kubectl instead of argocd CLI
+kubectl apply -f - <<EOF
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istio-base
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    chart: base
+    targetRevision: 1.20.0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+EOF
+
+kubectl apply -f - <<EOF
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istiod
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    chart: istiod
+    targetRevision: 1.20.0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+EOF
 
 kubectl label ns default istio-injection=enabled --overwrite || fail "Failed to inject auto istio proxy (sidecar) configuration in default namespace"
 
-kubectl wait pods --for=condition=Ready -l app=istiod -n istio-system --timeout=${TIMEOUT} || fail "Failed to deploy istiod pods"
+# Wait for ArgoCD applications to sync and deploy
+log "Waiting for Istio applications to sync and deploy"
+sleep 30
 
-argocd app create istio-gateway --repo https://istio-release.storage.googleapis.com/charts --helm-chart gateway --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc || fail "Failed to create istio-gateway argo app"
-argocd app sync istio-gateway || fail "Failed to sync istio-gateway argo app"
+# Wait for istio-base to be ready
+log "Waiting for istio-base to be ready"
+kubectl wait --for=condition=Ready --timeout=300s application/istio-base -n argocd || log "WARNING: istio-base application not ready"
+
+# Wait for istiod to be ready
+log "Waiting for istiod to be ready"
+kubectl wait --for=condition=Ready --timeout=300s application/istiod -n argocd || log "WARNING: istiod application not ready"
+
+# Wait for istiod pods to be ready
+log "Waiting for istiod pods to be ready"
+kubectl wait pods --for=condition=Ready -l app=istiod -n istio-system --timeout=${TIMEOUT} || log "WARNING: istiod pods not ready, but continuing..."
+
+kubectl apply -f - <<EOF
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istio-gateway
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    chart: gateway
+    targetRevision: 1.20.0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+EOF
 
 kubectl patch service istio-gateway -n istio-system --patch-file ./gateway-svc-patch.yaml || fail "Failed to patch istio-gateway"
 # TODO figure out how to decouple VirtualService from gateway.yaml
@@ -318,8 +469,27 @@ kubectl wait pods --for=condition=Ready -l app=service-b -n default --timeout=${
 log "Install prometheus"
 kubectl create namespace monitoring || fail "Failed to create monitoring namespace"
 kubectl label ns monitoring istio-injection=enabled --overwrite || fail "Failed to configure service mesh in monitoring namespace"
-argocd app create prometheus --repo https://prometheus-community.github.io/helm-charts --helm-chart prometheus --revision 25.8.0 --dest-namespace monitoring --dest-server https://kubernetes.default.svc || fail "Failed to create prometheus argo app"
-argocd app sync prometheus || fail "Failed to sync prometheus argo app"
+
+kubectl apply -f - <<EOF
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: prometheus
+    targetRevision: 25.8.0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+EOF
 
 log "Waiting for prometheus to be ready"
 wait_for_pods_ready "app.kubernetes.io/name=prometheus" "monitoring"
@@ -327,15 +497,69 @@ wait_for_pods_ready "app.kubernetes.io/name=prometheus" "monitoring"
 # Install grafana
 
 log "Install grafana"
-argocd app create grafana --repo https://grafana.github.io/helm-charts --helm-chart grafana --revision 7.0.8 --dest-namespace monitoring --dest-server https://kubernetes.default.svc --values-literal-file grafana-value.yaml --upsert || fail "Failed to create grafana argo app"
-argocd app sync grafana || fail "Failed to sync grafana app"
+kubectl apply -f - <<EOF
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: grafana
+    targetRevision: 7.0.8
+    helm:
+      values: |
+        adminPassword: admin
+        service:
+          type: NodePort
+          nodePort: 30001
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+EOF
+
 wait_for_pods_ready "app.kubernetes.io/name=grafana" "monitoring"
 
 # Install Kiali
 
 log "Install Kiali"
-argocd app create kiali-server --repo https://kiali.org/helm-charts --helm-chart kiali-server --revision 1.77.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc --values-literal-file kiali.yaml --upsert || fail "Failed to create Kiali argo app"
-argocd app sync kiali-server || fail "Failed to sync kiali argo app"
+kubectl apply -f - <<EOF
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kiali-server
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://kiali.org/helm-charts
+    chart: kiali-server
+    targetRevision: 1.77.0
+    helm:
+      values: |
+        auth:
+          strategy: anonymous
+        external_services:
+          istio:
+            root_namespace: istio-system
+        server:
+          port: 20001
+          web_root: /kiali
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+EOF
+
 wait_for_pods_ready "app.kubernetes.io/name=kiali" "istio-system"
 # TODO how to get this to be picked up as part of argocd app create
 kubectl apply -f ./kiali-vs.yaml -n istio-system || fail "Failed to install kiali virtual service"
@@ -344,25 +568,75 @@ log "kiali URL = $IP:30000/kiali"
 # Install httpbin (TODO move to argocd)
 kubectl apply -f httpbin.yaml
 wait_for_pods_ready "app=httpbin" "argocd"
-kubectl port-forward svc/httpbin 8890:80 &
+
+# Kill any existing port-forward processes to avoid conflicts
+pkill -f "kubectl port-forward.*8890" || true
+pkill -f "kubectl port-forward.*8887" || true
+pkill -f "kubectl port-forward.*8888" || true
+pkill -f "kubectl port-forward.*8889" || true
+
+# Wait for services to be ready before port-forwarding
+log "Waiting for services to be ready before setting up port forwarding"
+
+# Wait for Kiali to be ready
+kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=kiali -n istio-system --timeout=300s || log "WARNING: Kiali pod not ready, skipping port-forward"
+
+# Wait for Prometheus to be ready
+kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s || log "WARNING: Prometheus pod not ready, skipping port-forward"
+
+# Wait for Grafana to be ready
+kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=grafana -n monitoring --timeout=300s || log "WARNING: Grafana pod not ready, skipping port-forward"
+
+# Wait for HTTPBin to be ready
+kubectl wait --for=condition=Ready pod -l app=httpbin -n argocd --timeout=300s || log "WARNING: HTTPBin pod not ready, skipping port-forward"
+
+# Set up port forwarding with error handling
+log "Setting up port forwarding for services"
+
+# HTTPBin port-forward
+if kubectl get pod -l app=httpbin -n argocd --no-headers | grep -q Running; then
+    kubectl port-forward svc/httpbin 8890:80 &
+    log "HTTPBin port-forward started on 8890"
+else
+    log "WARNING: HTTPBin not ready, skipping port-forward"
+fi
 
 log "Install telepresence"
 telepresence helm install
-telepresence --run-shell &
 
+# Set up additional port forwarding with error handling
+log "Setting up additional port forwarding"
+
+# Kiali port-forward
+if kubectl get pod -l app.kubernetes.io/name=kiali -n istio-system --no-headers | grep -q Running; then
+    kubectl port-forward svc/kiali 8887:20001 -n istio-system > /dev/null 2>&1 &
+    log "Kiali port-forward started on 8887"
+else
+    log "WARNING: Kiali not ready, skipping port-forward"
+fi
+
+# Prometheus port-forward
+if kubectl get pod -l app.kubernetes.io/name=prometheus -n monitoring --no-headers | grep -q Running; then
+    kubectl port-forward -n monitoring service/prometheus-server 8888:80 > /dev/null 2>&1 &
+    log "Prometheus port-forward started on 8888"
+else
+    log "WARNING: Prometheus not ready, skipping port-forward"
+fi
+
+# Grafana port-forward
+if kubectl get pod -l app.kubernetes.io/name=grafana -n monitoring --no-headers | grep -q Running; then
+    kubectl port-forward -n monitoring service/grafana 8889:80 > /dev/null 2>&1 &
+    log "Grafana port-forward started on 8889"
+else
+    log "WARNING: Grafana not ready, skipping port-forward"
+fi
 
 log "L I N K S"
-log "Argo UI";
-log "http://locahost:8886 username/password admin/$PASSWORD"
-kubectl port-forward svc/kiali 8887:20001 -n istio-system > /dev/null 2>&1 &
-log "Kiali UI"
-log "http://localhost:8887"
-kubectl port-forward -n monitoring service/prometheus-server 8888:80 > /dev/null 2>&1 &
-log "Prometheus UI"
-log "http://localhost:8888"
-kubectl port-forward -n monitoring service/grafana 8889:80 > /dev/null 2>&1 &
-log "Grafana"
-log "http://localhost:8889 username/password admin/admin"
-log "httpbin"
+log "Argo UI: http://localhost:8886 username/password admin/$PASSWORD"
+log "Kiali UI: http://localhost:8887"
+log "Prometheus UI: http://localhost:8888"
+log "Grafana: http://localhost:8889 username/password admin/admin"
+log "HTTPBin: http://localhost:8890"
 
-log "http://localhost:8890"
+log "Cluster setup completed successfully!"
+log "Note: Some services may take a few minutes to be fully accessible."

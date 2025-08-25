@@ -168,7 +168,7 @@ log "Setting kubectl cluster-info to kind-argo"
 kubectl cluster-info --context kind-argo || fail "failed to retreive cluster info from argo cluster"
 
 image_names=(
-    "quay.io/argoproj/argocd:v2.9.2"
+    "quay.io/argoproj/argocd:v3.1.0"
     "ghcr.io/dexidp/dex:v2.37.0"
     "docker.io/library/redis:7.0.11-alpine"
     "docker.io/library/nginx:latest"
@@ -230,7 +230,7 @@ else
 fi
 
 # Bootstrap Argo
-ARGO_VER=2.9.2
+ARGO_VER=3.1.0
 log "Install Argo version ${ARGO_VER}"
 kubectl create namespace argocd || fail "Failed to create argocd namespace"
 

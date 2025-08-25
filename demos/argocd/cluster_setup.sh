@@ -414,19 +414,52 @@ kubectl label ns default istio-injection=enabled --overwrite || fail "Failed to 
 
 # Wait for ArgoCD applications to sync and deploy
 log "Waiting for Istio applications to sync and deploy"
-sleep 30
+sleep 60
 
-# Wait for istio-base to be ready
+# Wait for istio-base to be ready (with retry logic and continue on failure)
 log "Waiting for istio-base to be ready"
-kubectl wait --for=condition=Ready --timeout=300s application/istio-base -n argocd || log "WARNING: istio-base application not ready"
+for i in {1..12}; do
+    if kubectl wait --for=condition=Ready application/istio-base -n argocd --timeout=10s 2>/dev/null; then
+        log "istio-base application is ready"
+        break
+    fi
+    if [ $i -eq 12 ]; then
+        log "WARNING: istio-base application not ready after 2 minutes, continuing..."
+    else
+        log "Waiting for istio-base... (attempt $i/12)"
+        sleep 10
+    fi
+done
 
-# Wait for istiod to be ready
+# Wait for istiod to be ready (with retry logic and continue on failure)
 log "Waiting for istiod to be ready"
-kubectl wait --for=condition=Ready --timeout=300s application/istiod -n argocd || log "WARNING: istiod application not ready"
+for i in {1..12}; do
+    if kubectl wait --for=condition=Ready application/istiod -n argocd --timeout=10s 2>/dev/null; then
+        log "istiod application is ready"
+        break
+    fi
+    if [ $i -eq 12 ]; then
+        log "WARNING: istiod application not ready after 2 minutes, continuing..."
+    else
+        log "Waiting for istiod... (attempt $i/12)"
+        sleep 10
+    fi
+done
 
-# Wait for istiod pods to be ready
+# Wait for istiod pods to be ready (with retry logic and continue on failure)
 log "Waiting for istiod pods to be ready"
-kubectl wait pods --for=condition=Ready -l app=istiod -n istio-system --timeout=${TIMEOUT} || log "WARNING: istiod pods not ready, but continuing..."
+for i in {1..12}; do
+    if kubectl wait pods --for=condition=Ready -l app=istiod -n istio-system --timeout=10s 2>/dev/null; then
+        log "istiod pods are ready"
+        break
+    fi
+    if [ $i -eq 12 ]; then
+        log "WARNING: istiod pods not ready after 2 minutes, but continuing..."
+    else
+        log "Waiting for istiod pods... (attempt $i/12)"
+        sleep 10
+    fi
+done
 
 kubectl apply -f - <<EOF
 apiVersion: argoproj.io/v1alpha1
@@ -449,7 +482,35 @@ spec:
       selfHeal: true
 EOF
 
-kubectl patch service istio-gateway -n istio-system --patch-file ./gateway-svc-patch.yaml || fail "Failed to patch istio-gateway"
+# Wait for istio-gateway to be ready and then patch it
+log "Waiting for istio-gateway to be ready"
+for i in {1..12}; do
+    if kubectl wait --for=condition=Ready application/istio-gateway -n argocd --timeout=10s 2>/dev/null; then
+        log "istio-gateway application is ready"
+        break
+    fi
+    if [ $i -eq 12 ]; then
+        log "WARNING: istio-gateway application not ready after 2 minutes, continuing..."
+    else
+        log "Waiting for istio-gateway... (attempt $i/12)"
+        sleep 10
+    fi
+done
+
+# Try to patch the gateway service with retry
+log "Patching istio-gateway service"
+for i in {1..6}; do
+    if kubectl patch service istio-gateway -n istio-system --patch-file ./gateway-svc-patch.yaml 2>/dev/null; then
+        log "Successfully patched istio-gateway service"
+        break
+    fi
+    if [ $i -eq 6 ]; then
+        log "WARNING: Failed to patch istio-gateway service after 6 attempts, continuing..."
+    else
+        log "Waiting for istio-gateway service to be available... (attempt $i/6)"
+        sleep 10
+    fi
+done
 # TODO figure out how to decouple VirtualService from gateway.yaml
 kubectl apply -f ./gateway.yaml -n default || fail "Failed to apply gateway manifest"
 
@@ -575,61 +636,39 @@ pkill -f "kubectl port-forward.*8887" || true
 pkill -f "kubectl port-forward.*8888" || true
 pkill -f "kubectl port-forward.*8889" || true
 
-# Wait for services to be ready before port-forwarding
-log "Waiting for services to be ready before setting up port forwarding"
-
-# Wait for Kiali to be ready
-kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=kiali -n istio-system --timeout=300s || log "WARNING: Kiali pod not ready, skipping port-forward"
-
-# Wait for Prometheus to be ready
-kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s || log "WARNING: Prometheus pod not ready, skipping port-forward"
-
-# Wait for Grafana to be ready
-kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=grafana -n monitoring --timeout=300s || log "WARNING: Grafana pod not ready, skipping port-forward"
-
-# Wait for HTTPBin to be ready
-kubectl wait --for=condition=Ready pod -l app=httpbin -n argocd --timeout=300s || log "WARNING: HTTPBin pod not ready, skipping port-forward"
-
-# Set up port forwarding with error handling
-log "Setting up port forwarding for services"
-
-# HTTPBin port-forward
-if kubectl get pod -l app=httpbin -n argocd --no-headers | grep -q Running; then
-    kubectl port-forward svc/httpbin 8890:80 &
-    log "HTTPBin port-forward started on 8890"
-else
-    log "WARNING: HTTPBin not ready, skipping port-forward"
-fi
-
 log "Install telepresence"
 telepresence helm install
 
-# Set up additional port forwarding with error handling
-log "Setting up additional port forwarding"
+# Set up port forwarding with retry logic
+log "Setting up port forwarding for services"
 
-# Kiali port-forward
-if kubectl get pod -l app.kubernetes.io/name=kiali -n istio-system --no-headers | grep -q Running; then
-    kubectl port-forward svc/kiali 8887:20001 -n istio-system > /dev/null 2>&1 &
-    log "Kiali port-forward started on 8887"
-else
-    log "WARNING: Kiali not ready, skipping port-forward"
-fi
+# Function to start port-forward with retry
+start_port_forward() {
+    local service=$1
+    local port=$2
+    local namespace=$3
+    local label=$4
+    local max_attempts=5
+    
+    for attempt in $(seq 1 $max_attempts); do
+        if kubectl get pod -l "$label" -n "$namespace" --no-headers 2>/dev/null | grep -q Running; then
+            kubectl port-forward "$service" "$port" -n "$namespace" > /dev/null 2>&1 &
+            log "$service port-forward started on $port"
+            return 0
+        else
+            log "Attempt $attempt/$max_attempts: $service not ready, waiting 10 seconds..."
+            sleep 10
+        fi
+    done
+    log "WARNING: $service not ready after $max_attempts attempts, skipping port-forward"
+    return 1
+}
 
-# Prometheus port-forward
-if kubectl get pod -l app.kubernetes.io/name=prometheus -n monitoring --no-headers | grep -q Running; then
-    kubectl port-forward -n monitoring service/prometheus-server 8888:80 > /dev/null 2>&1 &
-    log "Prometheus port-forward started on 8888"
-else
-    log "WARNING: Prometheus not ready, skipping port-forward"
-fi
-
-# Grafana port-forward
-if kubectl get pod -l app.kubernetes.io/name=grafana -n monitoring --no-headers | grep -q Running; then
-    kubectl port-forward -n monitoring service/grafana 8889:80 > /dev/null 2>&1 &
-    log "Grafana port-forward started on 8889"
-else
-    log "WARNING: Grafana not ready, skipping port-forward"
-fi
+# Start port-forwards with retry logic
+start_port_forward "svc/httpbin" "8890:80" "argocd" "app=httpbin"
+start_port_forward "svc/kiali" "8887:20001" "istio-system" "app.kubernetes.io/name=kiali"
+start_port_forward "service/prometheus-server" "8888:80" "monitoring" "app.kubernetes.io/name=prometheus"
+start_port_forward "service/grafana" "8889:80" "monitoring" "app.kubernetes.io/name=grafana"
 
 log "L I N K S"
 log "Argo UI: http://localhost:8886 username/password admin/$PASSWORD"

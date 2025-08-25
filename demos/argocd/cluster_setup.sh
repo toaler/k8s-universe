@@ -602,16 +602,19 @@ spec:
     repoURL: https://kiali.org/helm-charts
     chart: kiali-server
     targetRevision: 2.14.0
-    helm:
-      values: |
-        auth:
-          strategy: anonymous
-        external_services:
-          istio:
-            root_namespace: istio-system
-        server:
-          port: 20001
-          web_root: /kiali
+          helm:
+        values: |
+          auth:
+            strategy: anonymous
+          external_services:
+            istio:
+              root_namespace: istio-system
+            prometheus:
+              url: http://prometheus-server.monitoring.svc.cluster.local:80
+              custom_metrics_url: http://prometheus-server.monitoring.svc.cluster.local:80
+          server:
+            port: 20001
+            web_root: /kiali
   destination:
     server: https://kubernetes.default.svc
     namespace: istio-system

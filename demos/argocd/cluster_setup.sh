@@ -379,7 +379,7 @@ spec:
   source:
     repoURL: https://istio-release.storage.googleapis.com/charts
     chart: base
-    targetRevision: 1.20.0
+    targetRevision: 1.27.0
   destination:
     server: https://kubernetes.default.svc
     namespace: istio-system
@@ -400,7 +400,7 @@ spec:
   source:
     repoURL: https://istio-release.storage.googleapis.com/charts
     chart: istiod
-    targetRevision: 1.20.0
+    targetRevision: 1.27.0
   destination:
     server: https://kubernetes.default.svc
     namespace: istio-system
@@ -472,7 +472,7 @@ spec:
   source:
     repoURL: https://istio-release.storage.googleapis.com/charts
     chart: gateway
-    targetRevision: 1.20.0
+    targetRevision: 1.27.0
   destination:
     server: https://kubernetes.default.svc
     namespace: istio-system
@@ -542,7 +542,7 @@ spec:
   source:
     repoURL: https://prometheus-community.github.io/helm-charts
     chart: prometheus
-    targetRevision: 25.8.0
+    targetRevision: 27.32.0
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
@@ -569,7 +569,7 @@ spec:
   source:
     repoURL: https://grafana.github.io/helm-charts
     chart: grafana
-    targetRevision: 7.0.8
+    targetRevision: 9.3.4
     helm:
       values: |
         adminPassword: admin
@@ -601,7 +601,7 @@ spec:
   source:
     repoURL: https://kiali.org/helm-charts
     chart: kiali-server
-    targetRevision: 1.77.0
+    targetRevision: 2.14.0
     helm:
       values: |
         auth:

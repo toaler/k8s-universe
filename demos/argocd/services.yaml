@@ -53,7 +53,7 @@ spec:
     configMap:
       name: service-a-cm
   containers:
-  - image: nginx
+  - image: nginx:1.25-alpine
     name: service-a
     imagePullPolicy: IfNotPresent
     volumeMounts:
@@ -93,7 +93,7 @@ spec:
     configMap:
       name: service-b-cm
   containers:
-  - image: nginx
+  - image: nginx:1.25-alpine
     name: service-b
     imagePullPolicy: IfNotPresent
     volumeMounts:

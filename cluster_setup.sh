@@ -130,10 +130,10 @@ docker network create kind --subnet 100.121.20.32/27 --gateway 100.121.20.33 --i
 
 
 log "Creating kind cluster"
-kind create cluster --config kind.yaml --name argo || fail "cound't create kind cluster argo"
+kind create cluster --config kind.yaml --name ${cluster_name} || fail "cound't create kind cluster ${cluster_name}"
 
-log "Setting kubectl cluster-info to kind-argo"
-kubectl cluster-info --context kind-argo || fail "failed to retreive cluster info from argo cluster"
+log "Setting kubectl cluster-info to kind-${cluster_name}"
+kubectl cluster-info --context kind-${cluster_name} || fail "failed to retreive cluster info from ${cluster_name} cluster"
 
 image_names=(
     "quay.io/argoproj/argocd:v2.9.2"
@@ -151,7 +151,7 @@ do
     docker pull "$image_name" || fail "Failed to pull image $image_name"
 
     # Load the Docker image into the 'kind' cluster
-    kind load docker-image "$image_name" --name argo || fail "Failed to load $image_name into kind repo"
+    kind load docker-image "$image_name" --name ${cluster_name} || fail "Failed to load $image_name into kind repo"
 done
 
 log "install brew helm and argocd software"
@@ -220,23 +220,31 @@ kubectl apply -n argocd -f argo_install.yaml || fail "Failed to kubectl apply ar
 NAMESPACE="argocd"
 
 kubectl patch service argocd-server -p '{"spec": {"type": "NodePort"}}' -n ${NAMESPACE} || fail "Failed to patch argocd-server"
+
+# Configure ArgoCD server to run in insecure mode (no HTTPS redirect) to work with proxies
+kubectl patch cm argocd-cmd-params-cm -n ${NAMESPACE} --type merge -p '{"data":{"server.insecure":"true"}}' || fail "Failed to patch argocd-cmd-params-cm"
+kubectl rollout restart deployment argocd-server -n ${NAMESPACE} || fail "Failed to restart argocd-server"
+
 kubectl wait --for=condition=Ready --timeout=10m --all pods -n ${NAMESPACE} || fail "Failed to create pods in ${NAMESPACE}"
 
-IP=$(kubectl get node argo-worker -o=jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+IP=$(kubectl get node ${cluster_name}-worker -o=jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
 PORT=$(kubectl get service argocd-server -o=jsonpath='{.spec.ports[?(@.nodePort)].nodePort}' -n ${NAMESPACE}| awk '{print $1}')
 PASSWORD=$(kubectl get secret argocd-initial-admin-secret -n ${NAMESPACE} -o jsonpath='{.data.password}' | base64 --decode)
 
 sleep 120
 
-#kubectl port-forward svc/argocd-server 8886:80 -n argocd &
-#log "Created port-forwarding for svc/argocd-server 8886:80"
+# Use port 80 (HTTP) instead of 443 (HTTPS) to avoid TLS issues with Zscaler
+kubectl port-forward svc/argocd-server 8080:80 -n argocd > /dev/null 2>&1 &
+PORT_FORWARD_PID=$!
+log "Created port-forwarding for svc/argocd-server 8080:80 (PID: $PORT_FORWARD_PID)"
 
 sleep 5
 
 log "Creating argocd session"
-argocd login --insecure --username admin --password $PASSWORD localhost:8080 || fail "Failed to login to argocd"
+# Login using plaintext HTTP to avoid Zscaler TLS interception
+argocd login --insecure --grpc-web --plaintext --username admin --password $PASSWORD localhost:8080 || fail "Failed to login to argocd"
 
-log "Argo UI http://localhost:8886 username/password admin/$PASSWORD"
+log "Argo UI http://$IP:$PORT username/password admin/$PASSWORD"
 
 log "Display argocd resources"
 kubectl -n ${NAMESPACE} get all || fail "Failed to get argo k8s resources"
@@ -245,26 +253,26 @@ kubectl config set-context --current --namespace=${NAMESPACE} || fail "Failed to
 
 # Bootstrap Helm charts
 log "Inject Helm charts URL's into Argocd"
-argocd repo add https://istio-release.storage.googleapis.com/charts --type helm --name istio --upsert || fail "Failed to istio helm chart to argo"
-argocd repo add https://prometheus-community.github.io/helm-charts --type helm --name prometheus-community --upsert || fail "Failed to add prometheus helm chart to argo"
-argocd repo add https://grafana.github.io/helm-charts --type helm --name grafana --upsert || fail "Failed to add grafana helm chart to argo"
-argocd repo add https://kiali.org/helm-charts --type helm --name kiali --upsert || fail "Failed to add kiali helm chart to argo"
+argocd repo add https://istio-release.storage.googleapis.com/charts --type helm --name istio --upsert --insecure --grpc-web || fail "Failed to istio helm chart to argo"
+argocd repo add https://prometheus-community.github.io/helm-charts --type helm --name prometheus-community --upsert --insecure --grpc-web || fail "Failed to add prometheus helm chart to argo"
+argocd repo add https://grafana.github.io/helm-charts --type helm --name grafana --upsert --insecure --grpc-web || fail "Failed to add grafana helm chart to argo"
+argocd repo add https://kiali.org/helm-charts --type helm --name kiali --upsert --insecure --grpc-web || fail "Failed to add kiali helm chart to argo"
 
 # Install Istio
 log "Add Istio application to Argo"
 kubectl create namespace istio-system || fail "Failed to create istio-system namespace"
-argocd app create istio-base --repo https://istio-release.storage.googleapis.com/charts --helm-chart base --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc || fail "Failed to create istio-base argo app"
-argocd app sync istio-base || fail "Failed to sync istio-base argo app"
+argocd app create istio-base --repo https://istio-release.storage.googleapis.com/charts --helm-chart base --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc --insecure --grpc-web || fail "Failed to create istio-base argo app"
+argocd app sync istio-base --insecure --grpc-web || fail "Failed to sync istio-base argo app"
 
-argocd app create istiod --repo https://istio-release.storage.googleapis.com/charts --helm-chart istiod --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc || fail "Failed to create istiod argo app"
-argocd app sync istiod || fail "Failed to sync istiod argo app"
+argocd app create istiod --repo https://istio-release.storage.googleapis.com/charts --helm-chart istiod --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc --insecure --grpc-web || fail "Failed to create istiod argo app"
+argocd app sync istiod --insecure --grpc-web || fail "Failed to sync istiod argo app"
 
 kubectl label ns default istio-injection=enabled --overwrite || fail "Failed to inject auto istio proxy (sidecar) configuration in default namespace"
 
 kubectl wait pods --for=condition=Ready -l app=istiod -n istio-system --timeout=${TIMEOUT} || fail "Failed to deploy istiod pods"
 
-argocd app create istio-gateway --repo https://istio-release.storage.googleapis.com/charts --helm-chart gateway --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc || fail "Failed to create istio-gateway argo app"
-argocd app sync istio-gateway || fail "Failed to sync istio-gateway argo app"
+argocd app create istio-gateway --repo https://istio-release.storage.googleapis.com/charts --helm-chart gateway --revision 1.20.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc --insecure --grpc-web || fail "Failed to create istio-gateway argo app"
+argocd app sync istio-gateway --insecure --grpc-web || fail "Failed to sync istio-gateway argo app"
 
 kubectl patch service istio-gateway -n istio-system --patch-file ./gateway-svc-patch.yaml || fail "Failed to patch istio-gateway"
 # TODO figure out how to decouple VirtualService from gateway.yaml
@@ -286,8 +294,8 @@ kubectl wait pods --for=condition=Ready -l app=service-b -n default --timeout=${
 log "Install prometheus"
 kubectl create namespace monitoring || fail "Failed to create monitoring namespace"
 kubectl label ns monitoring istio-injection=enabled --overwrite || fail "Failed to configure service mesh in monitoring namespace"
-argocd app create prometheus --repo https://prometheus-community.github.io/helm-charts --helm-chart prometheus --revision 25.8.0 --dest-namespace monitoring --dest-server https://kubernetes.default.svc || fail "Failed to create prometheus argo app"
-argocd app sync prometheus || fail "Failed to sync prometheus argo app"
+argocd app create prometheus --repo https://prometheus-community.github.io/helm-charts --helm-chart prometheus --revision 25.8.0 --dest-namespace monitoring --dest-server https://kubernetes.default.svc --insecure --grpc-web || fail "Failed to create prometheus argo app"
+argocd app sync prometheus --insecure --grpc-web || fail "Failed to sync prometheus argo app"
 
 log "Waiting for prometheus to be ready"
 wait_for_pods_ready "app.kubernetes.io/name=prometheus" "monitoring"
@@ -295,15 +303,15 @@ wait_for_pods_ready "app.kubernetes.io/name=prometheus" "monitoring"
 # Install grafana
 
 log "Install grafana"
-argocd app create grafana --repo https://grafana.github.io/helm-charts --helm-chart grafana --revision 7.0.8 --dest-namespace monitoring --dest-server https://kubernetes.default.svc --values-literal-file grafana-value.yaml --upsert || fail "Failed to create grafana argo app"
-argocd app sync grafana || fail "Failed to sync grafana app"
+argocd app create grafana --repo https://grafana.github.io/helm-charts --helm-chart grafana --revision 7.0.8 --dest-namespace monitoring --dest-server https://kubernetes.default.svc --values-literal-file grafana-value.yaml --upsert --insecure --grpc-web || fail "Failed to create grafana argo app"
+argocd app sync grafana --insecure --grpc-web || fail "Failed to sync grafana app"
 wait_for_pods_ready "app.kubernetes.io/name=grafana" "monitoring"
 
 # Install Kiali
 
 log "Install Kiali"
-argocd app create kiali-server --repo https://kiali.org/helm-charts --helm-chart kiali-server --revision 1.77.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc --values-literal-file kiali.yaml --upsert || fail "Failed to create Kiali argo app"
-argocd app sync kiali-server || fail "Failed to sync kiali argo app"
+argocd app create kiali-server --repo https://kiali.org/helm-charts --helm-chart kiali-server --revision 1.77.0 --dest-namespace istio-system --dest-server https://kubernetes.default.svc --values-literal-file kiali.yaml --upsert --insecure --grpc-web || fail "Failed to create Kiali argo app"
+argocd app sync kiali-server --insecure --grpc-web || fail "Failed to sync kiali argo app"
 wait_for_pods_ready "app.kubernetes.io/name=kiali" "istio-system"
 # TODO how to get this to be picked up as part of argocd app create
 kubectl apply -f ./kiali-vs.yaml -n istio-system || fail "Failed to install kiali virtual service"
@@ -313,9 +321,11 @@ log "kiali URL = $IP:30000/kiali"
 kubectl apply -f httpbin.yaml
 kubectl port-forward svc/httpbin 8890:80 &
 
-log "Install telepresence"
-telepresence helm install
-telepresence --run-shell &
+# log "Install telepresence"
+# telepresence helm install
+# telepresence --run-shell &
+# Note: Telepresence requires sudo/root privileges to run the daemon
+# Uncomment above lines if you need telepresence and run with appropriate permissions
 
 
 log "L I N K S"

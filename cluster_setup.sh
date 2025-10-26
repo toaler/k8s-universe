@@ -489,6 +489,22 @@ spec:
     repoURL: https://prometheus-community.github.io/helm-charts
     chart: prometheus
     targetRevision: 27.32.0
+    helm:
+      values: |
+        serverFiles:
+          prometheus.yml:
+            scrape_configs:
+              # Concord JMX Metrics - Ratis distributed consensus metrics
+              - job_name: 'concord-jmx-metrics'
+                scrape_interval: 15s
+                static_configs:
+                  - targets:
+                    - 'concord-0.concord-headless.concord.svc.cluster.local:9090'
+                    - 'concord-1.concord-headless.concord.svc.cluster.local:9090'
+                    - 'concord-2.concord-headless.concord.svc.cluster.local:9090'
+                    labels:
+                      app: 'concord'
+                      metrics_type: 'jmx'
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
